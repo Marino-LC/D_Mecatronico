@@ -40,11 +40,10 @@ def generate_launch_description():
     pkg_share   = FindPackageShare(PACKAGE)
     urdf_file   = PathJoinSubstitution([pkg_share, 'urdf',   'arm_description.xacro'])
     ctrl_yaml   = PathJoinSubstitution([pkg_share, 'config', 'arm_controllers.yaml'])
-    bridge_exec = PathJoinSubstitution([pkg_share, 'scripts', 'serial_bridge.py'])
 
-    # ── robot_description: URDF plano (sin xacro, ya está procesado) ──
+    # ── robot_description: xacro en modo "mock" (hardware virtual + posición) ──
     robot_desc = ParameterValue(
-        Command(['cat ', urdf_file]),
+        Command(['xacro ', urdf_file, ' modo:=mock']),
         value_type=str
     )
 

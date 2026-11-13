@@ -1,30 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Diseño_Final_Brazo_carro_5.urdf
-  ================================
-  URDF exportado por SolidWorks + adiciones para ROS 2 / Gazebo Harmonic:
+  arm_description.xacro  (modelo Diseño_Final_Brazo_carro_5)
+  ==========================================================
+  URDF exportado por SolidWorks + adiciones para ROS 2 Jazzy / Gazebo Harmonic.
+  Es un archivo XACRO: procesarlo siempre con `xacro` (no con `cat`).
 
-  CAMBIOS RESPECTO AL EXPORT ORIGINAL:
-  ─────────────────────────────────────
-  1. moviento_en_x   : límites corregidos [0, 0.30 m], effort=50, velocity=0.5
-  2. disco_soportes_rotacion, brazo_motores, brazo_gripper_azul:
-       continuous → revolute  +  límites ±2.094 rad  (requerido por JointTrajectoryController)
-  3. giro_360 / griper_mecanismo: se mantienen fixed (intencional del CAD)
-  4. Links dummy de masa añadidos (STS3215 ≈ 64 g) sin alterar la geometría visual:
-       masa_motor_riel, masa_motor_hombro, masa_motor_codo, masa_motor_muneca
-  5. Link payload_400g (esfera verde) fijo al gripper
-  6. Bloque <gazebo> con plugin gz_ros2_control
-  7. Bloque <ros2_control> con mock_components/GenericSystem (use_mock_hardware)
-       y gz_ros2_control/GazeboSimSystem para simulación real
+  ARGUMENTO  modo:=
+    gazebo_torque    (default) Gazebo + interfaz de ESFUERZO en riel/base/hombro/codo.
+                     El par lo calcula scripts/control_torque.py (PID + gravedad).
+    gazebo_posicion  Gazebo + interfaz de posición (JointTrajectoryController).
+    mock             Sin Gazebo: mock_components/GenericSystem (robot real con
+                     serial_bridge, ver real_robot.launch.py).
+
+  ARTICULACIONES CONTROLADAS (orden q0..q3 usado en todo el proyecto)
+    q0  moviento_en_x            riel lineal      [0, 0.30] m
+    q1  disco_soportes_rotacion  giro de la base  ±2.094 rad  (eje vertical)
+    q2  brazo_motores            hombro           ±2.094 rad
+    q3  brazo_gripper_azul       codo             ±2.094 rad
+    —   gripper_mecanismo        gripper          [0, 1]  (siempre en posición)
+
+  Los límites de esfuerzo y el amortiguamiento viscoso <dynamics damping>
+  corresponden a los actuadores de la propuesta 1 de la entrega 2
+  (ver README, sección "Control de torque"). scripts/modelo_brazo.py lee de
+  aquí masas, inercias, ejes, límites y amortiguamiento.
 -->
-<robot name="Diseño_Final_Brazo_carro_5">
+<robot name="Diseño_Final_Brazo_carro_5" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-  <!-- ═══════════════════════════════════════════════════════════════
-       ARG: activa hardware virtual para pruebas sin Gazebo
-       Uso: xacro archivo.urdf.xacro use_mock_hardware:=true
-  ════════════════════════════════════════════════════════════════ -->
-  <!-- Nota: este es URDF puro (no xacro), así que el arg se gestiona
-       desde el launch file pasando el parámetro robot_description.    -->
+  <xacro:arg name="modo" default="gazebo_torque" />
+  <xacro:property name="modo" value="$(arg modo)" />
 
   <!-- Link raíz del mundo (fijo, sin inercia) -->
   <link name="world" />
@@ -128,6 +131,7 @@
     <child  link="eje_x" />
     <axis xyz="0 0 1" />
     <limit lower="0" upper="0.30" effort="50" velocity="0.5" />
+    <dynamics damping="2.0" friction="0.0" />
   </joint>
 
   <!-- ═══════════════════════════════════════════════════════════════
@@ -209,8 +213,8 @@
   </link>
 
   <!--
-    JOINT 2 (controlado): HOMBRO — ROTACIÓN
-    ─────────────────────────────────────────
+    JOINT 2 (controlado): GIRO DE LA BASE (q1, eje vertical)
+    ─────────────────────────────────────────────────────────
     continuous → revolute  +  límites ±2.094 rad (~±120°)
     CORRECCIÓN: continuous no admite limits en JointTrajectoryController
   -->
@@ -219,7 +223,8 @@
     <parent link="rotacion_brazo" />
     <child  link="disco_soportes" />
     <axis xyz="0 1 0" />
-    <limit lower="-2.094" upper="2.094" effort="3" velocity="6.17" />
+    <limit lower="-2.094" upper="2.094" effort="0.52" velocity="10.79" />
+    <dynamics damping="0.0024" friction="0.0" />
   </joint>
 
   <!-- Masa dummy: motor del codo (montado en disco_soportes) -->
@@ -268,8 +273,8 @@
   </link>
 
   <!--
-    JOINT 3 (controlado): CODO
-    ───────────────────────────
+    JOINT 3 (controlado): HOMBRO (q2)
+    ──────────────────────────────────
     continuous → revolute  +  límites ±2.094 rad
   -->
   <joint name="brazo_motores" type="revolute">
@@ -278,7 +283,8 @@
     <parent link="disco_soportes" />
     <child  link="brazo_base" />
     <axis xyz="0 0 1" />
-    <limit lower="-2.094" upper="2.094" effort="3" velocity="6.17" />
+    <limit lower="-2.094" upper="2.094" effort="4.10" velocity="4.82" />
+    <dynamics damping="0.0426" friction="0.0" />
   </joint>
 
   <!-- Masa dummy: motor de muñeca (montado en brazo_base) -->
@@ -326,8 +332,8 @@
   </link>
 
   <!--
-    JOINT 4 (controlado): MUÑECA
-    ─────────────────────────────
+    JOINT 4 (controlado): CODO (q3)
+    ────────────────────────────────
     continuous → revolute  +  límites ±2.094 rad
   -->
   <joint name="brazo_gripper_azul" type="revolute">
@@ -335,7 +341,8 @@
     <parent link="brazo_base" />
     <child  link="brazo_gripper" />
     <axis xyz="0 1 0" />
-    <limit lower="-2.094" upper="2.094" effort="3" velocity="6.17" />
+    <limit lower="-2.094" upper="2.094" effort="2.94" velocity="6.49" />
+    <dynamics damping="0.0226" friction="0.0" />
   </joint>
 
   <!-- ═══════════════════════════════════════════════════════════════
@@ -372,7 +379,7 @@
     <parent link="brazo_gripper" />
     <child  link="gripper" />
     <axis xyz="0 0 1" />
-    <limit lower="0.0" upper="6.2831" effort="2" velocity="3.0" />
+    <limit lower="0.0" upper="1.0" effort="2" velocity="3.0" />
   </joint>
 
   <!-- ═══════════════════════════════════════════════════════════════
@@ -407,76 +414,64 @@
   <!-- ═══════════════════════════════════════════════════════════════
        GAZEBO — Plugin gz_ros2_control (Gazebo Harmonic / Jazzy)
   ════════════════════════════════════════════════════════════════ -->
-  <gazebo>
-    <plugin filename="gz_ros2_control-system"
-            name="gz_ros2_control::GazeboSimROS2ControlPlugin">
-      <parameters>$(find arm_description)/config/arm_controllers.yaml</parameters>
-    </plugin>
-  </gazebo>
+  <xacro:unless value="${modo == 'mock'}">
+    <gazebo>
+      <plugin filename="gz_ros2_control-system"
+              name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+        <xacro:if value="${modo == 'gazebo_torque'}">
+          <parameters>$(find arm_description)/config/arm_controllers_torque.yaml</parameters>
+        </xacro:if>
+        <xacro:unless value="${modo == 'gazebo_torque'}">
+          <parameters>$(find arm_description)/config/arm_controllers.yaml</parameters>
+        </xacro:unless>
+      </plugin>
+    </gazebo>
 
-  <!-- Fricción de contacto para los links móviles -->
-  <gazebo reference="eje_x">         <mu1>0.4</mu1><mu2>0.4</mu2></gazebo>
-  <gazebo reference="disco_soportes"><mu1>0.2</mu1><mu2>0.2</mu2></gazebo>
-  <gazebo reference="brazo_base">    <mu1>0.2</mu1><mu2>0.2</mu2></gazebo>
-  <gazebo reference="brazo_gripper"> <mu1>0.2</mu1><mu2>0.2</mu2></gazebo>
-  <gazebo reference="gripper">       <mu1>0.3</mu1><mu2>0.3</mu2></gazebo>
+    <!-- Fricción de contacto para los links móviles -->
+    <gazebo reference="eje_x">         <mu1>0.4</mu1><mu2>0.4</mu2></gazebo>
+    <gazebo reference="disco_soportes"><mu1>0.2</mu1><mu2>0.2</mu2></gazebo>
+    <gazebo reference="brazo_base">    <mu1>0.2</mu1><mu2>0.2</mu2></gazebo>
+    <gazebo reference="brazo_gripper"> <mu1>0.2</mu1><mu2>0.2</mu2></gazebo>
+    <gazebo reference="gripper">       <mu1>0.3</mu1><mu2>0.3</mu2></gazebo>
+  </xacro:unless>
 
   <!-- ═══════════════════════════════════════════════════════════════
        ROS2_CONTROL
        ─────────────
-       use_mock_hardware=true  → mock_components/GenericSystem
-         Úsalo con: real_robot.launch.py  (sin Gazebo, prueba de scripts)
-
-       use_mock_hardware=false → gz_ros2_control/GazeboSimSystem  (default)
-         Úsalo con: gazebo.launch.py
-
-       Los 4 joints controlables van aquí. Los joints fixed y los
-       dummy de masa NO se declaran (no tienen command_interface).
+       El plugin de hardware y la interfaz de comando dependen de `modo`:
+         gazebo_torque   → GazeboSimSystem + effort   (control de par)
+         gazebo_posicion → GazeboSimSystem + position
+         mock            → GenericSystem   + position (robot real)
+       El gripper siempre se comanda en posición.
   ════════════════════════════════════════════════════════════════ -->
+  <xacro:macro name="joint_brazo" params="nombre">
+    <joint name="${nombre}">
+      <xacro:if value="${modo == 'gazebo_torque'}">
+        <command_interface name="effort" />
+      </xacro:if>
+      <xacro:unless value="${modo == 'gazebo_torque'}">
+        <command_interface name="position" />
+      </xacro:unless>
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+  </xacro:macro>
+
   <ros2_control name="BrazoCarro" type="system">
     <hardware>
-      <!-- Hardware virtual para pruebas offline (sin Gazebo) -->
-      <!-- Actívalo desde el launch: xacro ... use_mock_hardware:=true -->
-      <!-- URDF puro no admite xacro:if, usa el launch para elegir -->
-      <!-- Para producción descomenta solo UNO de los dos bloques: -->
-
-      <!-- ── OPCIÓN A: Mock Hardware (pruebas con real_robot.launch) ── -->
-      <plugin>mock_components/GenericSystem</plugin>
-      
-      <!-- ── OPCIÓN B: Gazebo (descomenta y comenta la opción A) ────── 
-      <plugin>gz_ros2_control/GazeboSimSystem</plugin> 
-      -->
+      <xacro:if value="${modo == 'mock'}">
+        <plugin>mock_components/GenericSystem</plugin>
+      </xacro:if>
+      <xacro:unless value="${modo == 'mock'}">
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+      </xacro:unless>
     </hardware>
 
-    <!-- Riel lineal -->
-    <joint name="moviento_en_x">
-      <command_interface name="position" />
-      <state_interface   name="position" />
-      <state_interface   name="velocity" />
-    </joint>
+    <xacro:joint_brazo nombre="moviento_en_x" />            <!-- q0 riel   -->
+    <xacro:joint_brazo nombre="disco_soportes_rotacion" />  <!-- q1 base   -->
+    <xacro:joint_brazo nombre="brazo_motores" />            <!-- q2 hombro -->
+    <xacro:joint_brazo nombre="brazo_gripper_azul" />       <!-- q3 codo   -->
 
-    <!-- Hombro -->
-    <joint name="disco_soportes_rotacion">
-      <command_interface name="position" />
-      <state_interface   name="position" />
-      <state_interface   name="velocity" />
-    </joint>
-
-    <!-- Codo -->
-    <joint name="brazo_motores">
-      <command_interface name="position" />
-      <state_interface   name="position" />
-      <state_interface   name="velocity" />
-    </joint>
-
-    <!-- Muñeca -->
-    <joint name="brazo_gripper_azul">
-      <command_interface name="position" />
-      <state_interface   name="position" />
-      <state_interface   name="velocity" />
-    </joint>
-  
-    <!-- Gripper -->
     <joint name="gripper_mecanismo">
       <command_interface name="position" />
       <state_interface   name="position" />

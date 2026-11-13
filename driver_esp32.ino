@@ -17,6 +17,7 @@
 #include "LobotSerialServoControl.h"
 #include <AccelStepper.h>
 #include <ESP32Servo.h>
+#include <esp_task_wdt.h>   // esp_task_wdt_add / esp_task_wdt_reset
 
 // ── Forward declarations (bug 2) ──────────────────────────────────
 void ejecutarHoming();

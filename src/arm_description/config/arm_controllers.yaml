@@ -1,5 +1,9 @@
 # arm_controllers.yaml
 # =====================
+# Controladores en MODO POSICIÓN: robot real (xacro modo:=mock) y Gazebo
+# cinemático (modo:=gazebo_posicion). Para el control de torque en Gazebo
+# se usa arm_controllers_torque.yaml.
+#
 # Dos controladores independientes:
 #   arm_controller    → 4 joints del brazo + riel
 #   gripper_controller → 1 joint del gripper (abre/cierra)
@@ -24,22 +28,16 @@ controller_manager:
 arm_controller:
   ros__parameters:
     joints:
-      - moviento_en_x           # Riel lineal  [0 → 46 cm]
-      - disco_soportes_rotacion # Hombro       [±2.094 rad]
-      - brazo_motores           # Codo         [±2.094 rad]
-      - brazo_gripper_azul      # Muñeca       [±2.094 rad]
+      - moviento_en_x           # q0 riel lineal      [0 → 0.30 m en el xacro]
+      - disco_soportes_rotacion # q1 giro de la base  [±2.094 rad]
+      - brazo_motores           # q2 hombro           [±2.094 rad]
+      - brazo_gripper_azul      # q3 codo             [±2.094 rad]
 
     command_interfaces:
       - position
     state_interfaces:
       - position
       - velocity
-
-    #gains:
-    #  moviento_en_x:           {p: 500.0, i: 10.0, d: 20.0, i_clamp: 5.0}
-    #  disco_soportes_rotacion: {p: 2.0,   i: 0.05, d: 0.10, i_clamp: 0.5}
-    #  brazo_motores:           {p: 2.0,   i: 0.05, d: 0.10, i_clamp: 0.5}
-    #  brazo_gripper_azul:      {p: 2.0,   i: 0.05, d: 0.10, i_clamp: 0.2}
 
 # ── Controlador del gripper (1 joint) ────────────────────────────
 gripper_controller:
@@ -53,5 +51,3 @@ gripper_controller:
       - position
       - velocity
 
-    #gains:
-    #  gripper_mecanismo: {p: 5.0, i: 0.1, d: 0.5, i_clamp: 1.0}

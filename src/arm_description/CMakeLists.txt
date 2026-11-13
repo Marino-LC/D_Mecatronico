@@ -15,9 +15,7 @@ install(DIRECTORY
   urdf
   meshes
   launch
-  rviz
   config
-  scripts
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -33,10 +31,22 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+# Nodos ejecutables (ros2 run arm_description <script>.py)
 install(PROGRAMS
   scripts/teach_repeat.py
   scripts/teach_pendant_gui.py
   scripts/serial_bridge.py
+  scripts/control_torque.py
+  scripts/interfaz_trayectoria.py
+  scripts/diseno_pid.py
+  scripts/simulacion_offline.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# Módulos que importan los nodos anteriores (deben quedar en la misma carpeta)
+install(FILES
+  scripts/modelo_brazo.py
+  scripts/nucleo_control.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

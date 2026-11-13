@@ -26,9 +26,9 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 # ══════════════════════════════════════════════════════════════════
 JOINT_DEFS = [
     (1, 'Riel   ', 'moviento_en_x',            0.000,  0.300, 'm  ', 0.005),
-    (2, 'Hombro ', 'disco_soportes_rotacion',  -2.094,  2.094, 'rad', 0.050),
-    (3, 'Codo   ', 'brazo_motores',            -2.094,  2.094, 'rad', 0.050),
-    (4, 'Muñeca ', 'brazo_gripper_azul',       -2.094,  2.094, 'rad', 0.050),
+    (2, 'Base   ', 'disco_soportes_rotacion',  -2.094,  2.094, 'rad', 0.050),
+    (3, 'Hombro ', 'brazo_motores',            -2.094,  2.094, 'rad', 0.050),
+    (4, 'Codo   ', 'brazo_gripper_azul',       -2.094,  2.094, 'rad', 0.050),
     (5, 'Gripper', 'gripper_mecanismo',          0.000,  1.000, 'rad', 0.050),
 ]
 

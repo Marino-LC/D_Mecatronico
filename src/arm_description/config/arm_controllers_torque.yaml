@@ -1,0 +1,44 @@
+# arm_controllers_torque.yaml
+# ===========================
+# Controladores para Gazebo en MODO TORQUE (xacro modo:=gazebo_torque).
+#
+#   effort_controller   → reenvía a Gazebo el par/fuerza que calcula
+#                         scripts/control_torque.py (PID + compensación de gravedad)
+#                         Tópico: /effort_controller/commands  (std_msgs/Float64MultiArray)
+#                         Orden : [riel N, base N·m, hombro N·m, codo N·m]
+#   gripper_controller  → el gripper se mantiene en posición
+#
+# El lazo de control se cierra en control_torque.py con cada mensaje de
+# /joint_states, por eso update_rate fija también la frecuencia del PID (250 Hz).
+
+controller_manager:
+  ros__parameters:
+    update_rate: 250  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    effort_controller:
+      type: forward_command_controller/ForwardCommandController
+
+    gripper_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+effort_controller:
+  ros__parameters:
+    joints:
+      - moviento_en_x            # q0 riel lineal      [N]
+      - disco_soportes_rotacion  # q1 giro de la base  [N·m]
+      - brazo_motores            # q2 hombro           [N·m]
+      - brazo_gripper_azul       # q3 codo             [N·m]
+    interface_name: effort
+
+gripper_controller:
+  ros__parameters:
+    joints:
+      - gripper_mecanismo        # Gripper [0.0 = cerrado → 1.0 = abierto]
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity

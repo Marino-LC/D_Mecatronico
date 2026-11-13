@@ -1,31 +1,36 @@
-# Universidad Autónoma de México — Facultad de Ingeniería
+# Universidad Nacional Autónoma de México — Facultad de Ingeniería
 ## Diseño Mecatrónico
-### Brazo Robótico de 3 GDL + Gripper + Base Lineal con Motor a Pasos — Operado en ROS 2
-Diseñado y ensamblado por: 
--Fuentes Yañez Ivan
--Garduño Cruz Ingrid Paola
--Huarancca Panana Irvin Daymont
--López Cruz Marino
--Ortíz Martínez Raúl
+### Manipulador de 3 GDL + gripper sobre riel lineal — ROS 2 Jazzy, Gazebo Harmonic y ESP32
+
+Diseñado y ensamblado por:
+- Fuentes Yañez Ivan
+- Garduño Cruz Ingrid Paola
+- Huarancca Panana Irvin Daymont
+- López Cruz Marino
+- Ortíz Martínez Raúl
 
 ---
 
 ## Tabla de Contenidos
 
 - [Descripción del Proyecto](#descripción-del-proyecto)
+- [Entrega 3 — Propuesta: control de torque en Gazebo](#entrega-3--propuesta-control-de-torque-en-gazebo)
+  - [1. Qué cambia respecto al planteamiento cinemático](#1-qué-cambia-respecto-al-planteamiento-cinemático)
+  - [2. Arquitectura del lazo de torque](#2-arquitectura-del-lazo-de-torque)
+  - [3. Cambios hechos en el repositorio](#3-cambios-hechos-en-el-repositorio)
+  - [4. Parte 1 — Modelo físico y constantes](#4-parte-1--modelo-físico-y-constantes)
+  - [5. Parte 1 — Sintonización de los PID](#5-parte-1--sintonización-de-los-pid-tp--1-s-ts--2-s)
+  - [6. Parte 1 — Respuesta a escalón y rampa](#6-parte-1--respuesta-a-escalón-y-rampa)
+  - [7. Validación con la dinámica completa](#7-validación-con-la-dinámica-completa-recta-y-semiarco)
+  - [8. Parte 2 — Prototipo, interfaz y corridas](#8-parte-2--prototipo-interfaz-y-corridas)
+  - [9. Guion sugerido para el video](#9-guion-sugerido-para-el-video-máx-8-min)
+  - [10. Limitaciones y pendientes](#10-limitaciones-y-pendientes)
 - [Arquitectura del Sistema](#arquitectura-del-sistema)
 - [Estructura de Archivos](#estructura-de-archivos)
 - [Descripción de los Códigos](#descripción-de-los-códigos)
-  - [arm_description_v2.xacro](#1-arm_description_v2xacro--descripción-cinemática-del-robot)
-  - [arm_controllers.yaml](#2-arm_controllersyaml--configuración-de-controladores)
-  - [teach_repeat.py](#3-teach_repeatpy--control-por-terminal-enseñar-y-repetir)
-  - [teach_pendant_gui.py](#4-teach_pendant_guipy--interfaz-gráfica-de-control-pyqt5)
-  - [IntegradoMotoresYBase.ino](#5-integradomoresybaseino--firmware-esp32-control-de-hardware-real)
-- [Interconexión entre Módulos](#interconexión-entre-módulos)
 - [Requisitos Previos](#requisitos-previos)
 - [Instalación y Configuración](#instalación-y-configuración)
 - [Instrucciones para Echar a Andar el Robot](#instrucciones-para-echar-a-andar-el-robot)
-- [Control del Robot](#control-del-robot)
 - [Solución de Problemas Comunes](#solución-de-problemas-comunes)
 - [Notas Técnicas](#notas-técnicas)
 
@@ -33,216 +38,441 @@ Diseñado y ensamblado por:
 
 ## Descripción del Proyecto
 
-Este proyecto implementa el control completo de un **brazo robótico serial de 3 grados de libertad (GDL)** montado sobre una **base lineal accionada por motor a pasos**, con un **gripper** al final del efector. El sistema es operado mediante **ROS 2** y puede visualizarse y simularse en **RViz** y **Gazebo**.
+Manipulador serial montado sobre un **riel lineal**, con giro de base, hombro, codo y un **gripper**. Se opera con **ROS 2 Jazzy**; se simula en **Gazebo Harmonic** (`gz_ros2_control`) y el prototipo físico se mueve con un **ESP32** (motor a pasos + servos de bus serial).
 
-### Configuración Física
+### Articulaciones
 
-| Componente | Tipo | Articulación ROS 2 |
+El modelo es `Diseño_Final_Brazo_carro_5` (`src/arm_description/urdf/arm_description.xacro`). El orden `q0…q3` es el mismo en todo el proyecto.
+
+| Coord. | Articulación (xacro) | Tipo | Límite | Trama ESP32 |
+|---|---|---|---|---|
+| `q0` | `moviento_en_x` | prismática, eje X (riel) | 0 – 0.30 m | `V1` → motor a pasos |
+| `q1` | `disco_soportes_rotacion` | rotativa, eje vertical (giro de la base) | ±2.094 rad | `V2` → servo ID 1 |
+| `q2` | `brazo_motores` | rotativa, cabeceo (hombro) | ±2.094 rad | `V3` → servo ID 2 |
+| `q3` | `brazo_gripper_azul` | rotativa, cabeceo (codo) | ±2.094 rad | `V4` → servo ID 3 |
+| — | `gripper_mecanismo` | gripper | 0 (cerrado) – 1 (abierto) | `V5` → SG90 |
+
+> En el firmware los servos ID 1, 2 y 3 se llaman `ID_HOMBRO`, `ID_CODO` e `ID_MUNECA`; físicamente corresponden a base, hombro y codo (el orden de la trama es el que manda).
+
+Dimensiones (del xacro): altura del eje del hombro `L1 = 99.35 mm`, hombro→codo `L2 = 170 mm`, codo→punto de agarre `L3 = 240 mm`, masa móvil total 1.60 kg incluyendo una carga de 400 g.
+
+---
+
+## Entrega 3 — Propuesta: control de torque en Gazebo
+
+**Objetivo de la entrega:** con la información de la segunda entrega (cinemática, dinámica y selección de actuadores), construir un sistema de control sencillo pero efectivo que mantenga la operabilidad del manipulador.
+
+**Propuesta:** dejar de tratar el problema como cinemático (mandar posiciones y que el simulador las imponga) y **controlar el par de cada articulación**. Gazebo ya integra la dinámica del brazo (masas e inercias del xacro), así que basta con cambiar la interfaz de comando de `position` a `effort` y cerrar el lazo nosotros:
+
+$$\tau_i = \underbrace{K_{p,i}\,e_i + K_{i,i}\!\int e_i\,dt + K_{d,i}\,\dot e_i}_{\text{PID de la articulación } i} + \underbrace{G_i(q)}_{\text{compensación de gravedad}},\qquad e_i = q_{ref,i} - q_i$$
+
+### 1. Qué cambia respecto al planteamiento cinemático
+
+| | Antes (cinemático) | Propuesta (torque) |
 |---|---|---|
-| Base lineal (riel) | Prismática — traslación en eje Y | `Motor_Base` |
-| Hombro | Revoluta | `Motor_1` |
-| Codo | Revoluta | `Motor_2` |
-| Muñeca | Revoluta | `Motor_3` |
-| Gripper | (efector final, no articulado en control) | — |
+| Interfaz en Gazebo | `position`: el simulador coloca la articulación donde se le pide | `effort`: el simulador solo recibe N y N·m |
+| ¿Quién sigue la trayectoria? | `JointTrajectoryController` interpola posiciones | Un PID por articulación calcula el par |
+| Dinámica (inercia, gravedad, acoplamiento) | No interviene | Interviene: es la planta que se controla |
+| Qué se puede evaluar | Solo la geometría del movimiento | Tiempo pico, asentamiento, error, pares pico y saturación de cada motor |
+| Robot real | Sin cambios (`modo:=mock`, servos en posición) | Sin cambios; ver [limitaciones](#10-limitaciones-y-pendientes) |
+
+El modo cinemático **no se eliminó**: sigue disponible con `modo:=gazebo_posicion` y es el que usa el robot real.
+
+### 2. Arquitectura del lazo de torque
+
+```
+                 /trayectoria/comando  (recta | semiarco | home | paro | escalon i | rampa i)
+interfaz_trayectoria.py ───────────────────────────────┐
+        ▲                                               ▼
+        │ /trayectoria/estado            ┌──────────────────────────────────┐
+        │ /efector/posicion              │        control_torque.py         │
+        └────────────────────────────────│  generador de trayectoria (CI)   │
+          /efector/velocidad             │  PID por articulación + G(q)     │
+                                         │  modelo del actuador (motor CD)  │
+                                         └───────┬──────────────────▲───────┘
+                     /effort_controller/commands │                  │ /joint_states
+                     [N, N·m, N·m, N·m]          ▼                  │ (posición y velocidad, 250 Hz)
+                                    ┌─────────────────────┐   ┌─────┴──────────────────┐
+                                    │ effort_controller   │   │ joint_state_broadcaster│
+                                    │ (ForwardCommand)    │   │                        │
+                                    └──────────┬──────────┘   └─────▲──────────────────┘
+                                               ▼                    │
+                                    ┌──────────────────────────────────────────┐
+                                    │ Gazebo Harmonic + gz_ros2_control        │
+                                    │ dinámica de cuerpo rígido del xacro      │
+                                    └──────────────────────────────────────────┘
+```
+
+- **Sensores:** posición y velocidad articular de `/joint_states` (equivalente a los encoders de los servos).
+- **Actuadores:** par/fuerza por articulación; los cuatro se comandan simultáneamente en cada ciclo.
+- **Un solo modelo:** `modelo_brazo.py` lee masas, inercias, ejes, límites y amortiguamiento directamente del xacro que carga Gazebo. De ahí salen `G(q)`, `M(q)`, la cinemática directa y el jacobiano, así que el controlador y la planta no pueden desalinearse (no hay ceros ni signos supuestos a mano).
+- **Un solo controlador:** `nucleo_control.py` no depende de ROS. Lo ejecutan igual el nodo de Gazebo y la simulación sin ROS (`simulacion_offline.py`).
+
+### 3. Cambios hechos en el repositorio
+
+**Nuevos**
+
+| Archivo | Función |
+|---|---|
+| `scripts/modelo_brazo.py` | Modelo cinemático/dinámico leído del xacro, plano de trabajo, lugares geométricos y cinemática inversa |
+| `scripts/diseno_pid.py` | Constantes de los motores, sintonización de los PID, respuestas a escalón y rampa |
+| `scripts/nucleo_control.py` | Ley de control `PID + G(q)`, generador de trayectorias y máquina de estados |
+| `scripts/control_torque.py` | Nodo ROS 2 que cierra el lazo contra Gazebo |
+| `scripts/interfaz_trayectoria.py` | Interfaz: tipo de trayectoria, posición y velocidad del efector en tiempo real |
+| `scripts/simulacion_offline.py` | Validación con la dinámica completa, sin ROS ni Gazebo |
+| `config/arm_controllers_torque.yaml` | `effort_controller` (ForwardCommandController) + gripper en posición |
+| `docs/img/*.png` | Gráficas generadas por los scripts anteriores |
+
+**Modificados**
+
+| Archivo | Cambio |
+|---|---|
+| `urdf/arm_description.xacro` | Ahora es un xacro real con argumento `modo` (`gazebo_torque` \| `gazebo_posicion` \| `mock`); interfaz `effort` en modo torque; `<dynamics damping>` y límites de esfuerzo/velocidad de los actuadores propuestos |
+| `launch/gazebo.launch.py` | Argumentos `modo` e `interfaz`; lanza `effort_controller`, `gripper_controller`, `control_torque.py` y la interfaz |
+| `launch/real_robot.launch.py` | Procesa el xacro con `xacro … modo:=mock` en lugar de `cat` |
+
+**Errores de la base corregidos**
+
+| Problema | Corrección |
+|---|---|
+| El xacro traía fijo `mock_components/GenericSystem`: `gazebo.launch.py` abría Gazebo pero el robot no quedaba controlado por `gz_ros2_control` (había que editar el archivo a mano) | El plugin de hardware se elige con `modo:=` |
+| `real_robot.launch.py` leía el xacro con `cat` aunque contiene `$(find …)` | Se procesa con `xacro` |
+| `CMakeLists.txt` instalaba la carpeta `rviz/`, que no existe → `colcon build` fallaba al instalar | Se quitó; se agregaron los scripts nuevos |
+| `gazebo.launch.py` nunca activaba `gripper_controller` | Se activa en ambos modos |
+| `package.xml` no declaraba `ros2_control`, Gazebo, `rclpy`, PyQt5, pyserial… (`rosdep install` no instalaba nada útil) | Dependencias completas |
+| Límite del gripper `0 – 6.2831` contra el `0 – 1` que usan la GUI y el firmware | `upper="1.0"` |
+| Etiquetas cruzadas: `disco_soportes_rotacion` aparecía como "hombro" y `brazo_gripper_azul` como "muñeca" en el xacro, el yaml, `teach_repeat.py` y `serial_bridge.py` | Base / hombro / codo en todos lados (solo texto; el orden de la trama no cambia) |
+| `serial_bridge.py` y `teach_pendant_gui.py` sin permiso de ejecución (`ros2 run` falla con `--symlink-install`) | `chmod +x` |
+| `driver_esp32.ino` usa `esp_task_wdt_*` sin incluir su cabecera | `#include <esp_task_wdt.h>` |
+| `a.gitignore` no era leído por git; `.vscode/` y un archivo vacío `ssh` estaban versionados | Renombrado a `.gitignore`; se dejaron de versionar |
+| Este README describía archivos y articulaciones que no existen (`Motor_Base`, `arm_description_v2.xacro`, `display.launch.py`, ROS 2 Humble…) | Reescrito conforme al repositorio |
+
+### 4. Parte 1 — Modelo físico y constantes
+
+Cada articulación se modela como un motor de CD con reducción, referido al eje de salida (para el riel, al carro):
+
+$$V = R_a\,i + L_a\frac{di}{dt} + K_b\,\omega,\qquad \tau = K_t\,i,\qquad J\dot\omega + B\,\omega = \tau - \tau_{carga}$$
+
+El lazo interno de par compensa la fuerza contraelectromotriz, $V = R_a\,i^* + K_b\,\omega$ con $i^* = \tau^*/K_t$, de modo que $\tau/\tau^* = 1/(t_e s + 1)$ con $t_e = L_a/R_a$, y la planta que ve el PID es
+
+$$\frac{q(s)}{\tau^*(s)} = \frac{1}{s\,(Js + B)\,(t_e s + 1)}$$
+
+Como $t_e < 2$ ms frente a una dinámica de lazo de ~1 s, para sintonizar se usa $1/[s(Js+B)]$; las simulaciones sí incluyen $t_e$ y el límite de tensión.
+
+Actuadores: **propuesta 1 de la entrega 2**.
+
+| | `q0` riel | `q1` base | `q2` hombro | `q3` codo |
+|---|---|---|---|---|
+| Actuador | NEMA 17 17HS4401 + polea GT2 20T | Dynamixel XL330-M288-T | Dynamixel XM430-W350-R | Feetech STS3215 |
+| Tensión nominal $V_n$ | 12 V | 5 V | 12 V | 12 V |
+| Par de paro / sostenimiento | 0.40 N·m (62.8 N en el carro) | 0.52 N·m | 4.10 N·m | 2.94 N·m |
+| Corriente de paro / nominal | 1.7 A | 1.47 A | 2.30 A | 2.70 A |
+| Velocidad en vacío | — | 103 rpm | 46 rpm | 62 rpm |
+| Reducción $N$ | $1/r$, $r = 6.366$ mm | 288.35 | 353.5 | 345 |
+| **Resistencia de armadura $R_a$** | 1.50 Ω | 3.40 Ω | 5.22 Ω | 4.44 Ω |
+| **Inductancia de armadura $L_a$** | 2.8 mH | 0.3 mH ⚠ | 0.2 mH ⚠ | 1.0 mH ⚠ |
+| **Constante de par (armadura) $K_t$** | 36.96 N/A | 0.354 N·m/A | 1.783 N·m/A | 1.089 N·m/A |
+| **Constante de f.c.e.m. $K_b$** | 36.96 V·s/m | 0.464 V·s/rad | 2.491 V·s/rad | 1.848 V·s/rad |
+| Constante eléctrica $t_e = L_a/R_a$ | 1.87 ms | 0.09 ms | 0.04 ms | 0.23 ms |
+| Inercia del rotor $J_m$ | 5.4×10⁻⁶ kg·m² | 3×10⁻⁸ ⚠ | 2×10⁻⁷ ⚠ | 2×10⁻⁷ ⚠ |
+| Inercia del rotor reflejada $N^2 J_m$ | 0.133 kg | 0.0025 kg·m² | 0.0250 kg·m² | 0.0238 kg·m² |
+| **Inercia de la carga $J$** (de $M(q)$ en *home*) | 1.6025 kg | 0.0500 kg·m² | 0.0556 kg·m² | 0.0250 kg·m² |
+| **Fricción viscosa $B$** | 2.0 N·s/m ⚠ | 0.0024 N·m·s/rad ⚠ | 0.0426 ⚠ | 0.0226 ⚠ |
+| Límite de esfuerzo usado | 50 N | 0.52 N·m | 4.10 N·m | 2.94 N·m |
+
+Cómo se obtuvo cada valor (`diseno_pid.py`, función `constantes_motor`):
+
+- **Servos:** $R_a = V_n / I_{paro}$, $K_t = T_{paro}/I_{paro}$ y $K_b = V_n/\omega_0$, con los datos nominales de catálogo de la tabla 6 de la entrega 2. El cociente $K_t/K_b$ (0.59 – 0.76) es la eficiencia de la reducción.
+- **Motor a pasos:** se trata como motor síncrono equivalente, $K_t = T_{sost}/I_{nom} = 0.235$ N·m/A y $K_b = K_t$ en SI; la polea de 20 dientes (radio 6.366 mm) los convierte a N/A y V·s/m. $R_a$, $L_a$ y $J_m$ son los de la hoja de datos del 17HS4401.
+- **Inercia $J$:** elemento diagonal de la matriz de inercia $M(q)$ calculada del xacro en la postura *home*; es la inercia que ve la articulación con las demás sostenidas.
+- **⚠ Valores estimados (no vienen en las hojas de datos de los servos):** $L_a$ y $J_m$ son órdenes de magnitud típicos de motores de ese tamaño; $B$ se supuso como el 5 % del par de paro a la velocidad en vacío (2 N·s/m para la guía lineal). **Deben medirse o identificarse en los motores reales antes de usarse en hardware.** $B$ está escrito en el `<dynamics damping>` del xacro, de modo que Gazebo y el diseño usan el mismo número.
+
+> **Inercia del rotor.** Gazebo simula solo los eslabones, por eso las ganancias por defecto usan la inercia de la carga. Para el hardware real hay que sumar $N^2 J_m$ (que en el hombro y el codo es comparable a la carga): `python3 diseno_pid.py --rotor`, o el parámetro `incluir_rotor:=true` del nodo. Las ganancias escalan linealmente con $J$.
+
+### 5. Parte 1 — Sintonización de los PID ($t_p$ = 1 s, $t_s$ = 2 s)
+
+Se usa un **PID de dos grados de libertad**:
+
+$$\tau^* = K_p\,(b\,r - q) + K_i\!\int (r - q)\,dt + K_d\,(c\,\dot r - \dot q) + G(q)$$
+
+Con la planta $1/[s(Js+B)]$ el polinomio característico es $J s^3 + (B + K_d)s^2 + K_p s + K_i$. Se iguala a $J\,(s^2 + 2\zeta\omega_n s + \omega_n^2)(s + p)$:
+
+1. De las especificaciones: $\sigma = 4/t_s = 2\ \text{s}^{-1}$ y $\omega_d = \pi/t_p = 3.142$ rad/s  →  $\omega_n = \sqrt{\sigma^2+\omega_d^2} = 3.724$ rad/s, $\zeta = \sigma/\omega_n = 0.537$, sobrepaso $M_p = e^{-\sigma\pi/\omega_d} = 13.5\ \%$.
+2. Tercer polo real cinco veces más rápido: $p = 5\sigma = 10$ rad/s.
+3. Ganancias:
+
+$$K_p = J(\omega_n^2 + 2\zeta\omega_n p),\qquad K_i = J\,\omega_n^2\,p,\qquad K_d = J(2\zeta\omega_n + p) - B$$
+
+4. Peso de la referencia $b = \dfrac{\omega_n^2}{\omega_n^2 + 2\zeta\omega_n p} = 0.2575$ y $c = 0$: el cero del controlador cancela el polo $p$ y queda **exactamente** $\dfrac{q}{r} = \dfrac{\omega_n^2}{s^2 + 2\zeta\omega_n s + \omega_n^2}$. Con $b = 1$ (proporcional sobre el error) y los mismos polos, el cero sin cancelar da ≈ 37 % de sobrepaso y $t_p \approx 0.68$ s: no cumple la especificación.
+
+Ganancias resultantes (planta de Gazebo):
+
+| Articulación | $J$ | $K_p$ | $K_i$ | $K_d$ |
+|---|---|---|---|---|
+| `q0` riel | 1.6025 kg | 86.33 N/m | 222.26 N/(m·s) | 20.43 N·s/m |
+| `q1` base | 0.0500 kg·m² | 2.692 N·m/rad | 6.931 N·m/(rad·s) | 0.697 N·m·s/rad |
+| `q2` hombro | 0.0556 kg·m² | 2.997 | 7.716 | 0.736 |
+| `q3` codo | 0.0250 kg·m² | 1.347 | 3.468 | 0.328 |
+
+Con la inercia de rotor reflejada (`--rotor`, para hardware): riel 93.50 / 240.74 / 22.30; base 2.827 / 7.277 / 0.732; hombro 4.343 / 11.182 / 1.086; codo 2.629 / 6.770 / 0.661.
+
+Detalles de implementación (`PID2GDL` en `diseno_pid.py`):
+
+- Saturación al límite de cada actuador y **anti-windup** por integración condicional.
+- **Dos modos con las mismas ganancias.** *Regulación* ($b = 0.2575$, $c = 0$) para escalones, y *seguimiento* ($b = c = 1$, PID sobre el error) cuando la referencia es suave (perfil quíntico) para que el error en rampa sea cero. El cambio de modo es sin saltos (el integrador absorbe la diferencia).
+- **Compensación de gravedad** $G(q)$ calculada del xacro: el hombro sostiene ~2.0 N·m y el codo ~1.0 N·m, que de otro modo tendría que acumular el integrador.
+- **Modelo del actuador** (`Actuador`): constante eléctrica $t_e$ y par limitado por la tensión disponible, $|V| \le V_n$ (curva par-velocidad).
+
+### 6. Parte 1 — Respuesta a escalón y rampa
+
+```bash
+cd src/arm_description/scripts
+python3 diseno_pid.py            # tablas + docs/img/pid_escalon_rampa.png
+```
+
+Modelo lineal de cada articulación con su motor y el PID discreto a 250 Hz:
+
+![Respuesta a escalón y rampa por articulación](docs/img/pid_escalon_rampa.png)
+
+| Articulación | Escalón | $t_p$ | $t_s$ (banda 2 %) | $M_p$ | Esfuerzo pico | Rampa | Error en rampa (regulación) | Error en rampa (seguimiento) |
+|---|---|---|---|---|---|---|---|---|
+| `q0` riel | 0.05 m | 1.00 s | 1.56 s | 13.7 % | 1.11 N | 0.02 m/s | 5.7 mm | ≈ 0 |
+| `q1` base | 0.20 rad | 1.00 s | 1.56 s | 13.7 % | 0.14 N·m | 0.10 rad/s | 0.0287 rad | ≈ 0 |
+| `q2` hombro | 0.20 rad | 1.00 s | 1.56 s | 13.7 % | 0.15 N·m | 0.10 rad/s | 0.0287 rad | ≈ 0 |
+| `q3` codo | 0.20 rad | 1.00 s | 1.56 s | 13.7 % | 0.07 N·m | 0.10 rad/s | 0.0287 rad | ≈ 0 |
+
+- El tiempo pico es 1.00 s en las cuatro articulaciones. El asentamiento de 2 s corresponde al criterio de diseño $t_s = 4/\sigma$; medido como entrada a la banda de ±2 % la respuesta ideal se asienta antes (1.56 s).
+- Las cuatro respuestas normalizadas son idénticas porque las ganancias se escalan con la inercia de cada articulación.
+- En rampa, el modo de regulación deja un retraso constante $e_v = (2\zeta/\omega_n)\,\dot r = 0.288\ \text{s}\cdot\dot r$ (sistema tipo 1 respecto a la referencia); el modo de seguimiento lo elimina (tipo 2).
+
+La misma prueba sobre **el brazo completo** (dinámica no lineal, acoplamiento entre articulaciones, las otras tres sosteniendo su posición):
+
+![Escalón y rampa en la planta no lineal](docs/img/sim_escalon_rampa_no_lineal.png)
+
+| Articulación | $t_p$ | $t_s$ (2 %) | $M_p$ | Perturbación máx. en las demás |
+|---|---|---|---|---|
+| `q0` riel | 1.00 s | 2.07 s | 14.8 % | 0.016 rad |
+| `q1` base | 1.00 s | 2.07 s | 14.8 % | 0.002 |
+| `q2` hombro | 1.00 s | 2.11 s | 15.9 % | 0.023 rad |
+| `q3` codo | 1.00 s | 2.09 s | 15.6 % | 0.010 rad |
+
+El acoplamiento (sobre todo hombro–codo) añade 1 – 2 puntos de sobrepaso y alarga la cola hasta ≈ 2.1 s.
+
+### 7. Validación con la dinámica completa (recta y semiarco)
+
+```bash
+python3 simulacion_offline.py    # docs/img/sim_recta.png, sim_semiarco.png, sim_escalon_rampa_no_lineal.png (~2.5 min)
+```
+
+Planta: $M(q)\ddot q + C(q,\dot q)\dot q + G(q) + B\dot q = \tau$ del xacro integrada a 1 kHz, con topes articulares; el controlador es el mismo código que corre en Gazebo, a 250 Hz. Cada corrida empieza con el brazo cayendo 0.3 s sin control (lo que ocurre en Gazebo entre el *spawn* y la activación de los controladores), luego va a *home*, se acerca al inicio y traza.
+
+Plano y lugares geométricos de la entrega 2: hoja tamaño carta (279.4 × 215.9 mm) inclinada 45°, arista inferior en `y = 240 mm`, `z = 0`. Trazo de 6 s con perfil quíntico; el riel absorbe la mitad del desplazamiento en X ($\kappa = 0.5$).
+
+| Corrida | Inicio (x, y, z) [mm] | Fin [mm] | Longitud | Error cartesiano máx. | Fuera del plano máx. | Rapidez máx. | Error final |
+|---|---|---|---|---|---|---|---|
+| Recta (diagonal A→C) | (−59.7, 240.0, 0.0) | (219.7, 392.7, 152.7) | 353.1 mm | 0.86 mm | 0.30 mm | 111 mm/s | 0.09 mm |
+| Semiarco (r = 121.8 mm) | (−34.3, 253.9, 13.9) | (158.4, 359.2, 119.2) | 382.6 mm | 2.80 mm | 1.34 mm | 123 mm/s | 0.07 mm |
+
+![Corrida de la recta](docs/img/sim_recta.png)
+
+![Corrida del semiarco](docs/img/sim_semiarco.png)
+
+Durante los trazos el hombro trabaja cerca de 2.0 N·m (límite 4.10) y el codo cerca de 1.0 N·m (límite 2.94), en línea con los pares de la entrega 2. Los actuadores solo se saturan un instante al recuperar el brazo de la caída inicial.
+
+### 8. Parte 2 — Prototipo, interfaz y corridas
+
+**Objetivo del robot.** Llevar el órgano terminal (con una carga de 400 g) a lo largo de lugares geométricos definidos sobre un plano inclinado frente al riel, coordinando cuatro actuadores.
+
+**Características generales.** 4 GDL (riel + base + hombro + codo) y gripper; control de par por articulación (PID + gravedad) a 250 Hz; realimentación de posición y velocidad articular; trayectorias con perfil quíntico; redundancia resuelta repartiendo el movimiento en X entre el riel y el brazo.
+
+**Forma de operar.**
+
+```bash
+# Terminal 1: Gazebo + controladores + control de torque + interfaz
+ros2 launch arm_description gazebo.launch.py
+```
+
+Al arrancar, el controlador toma la postura en la que encuentra al brazo y lo lleva a *home*. Después, desde la interfaz (o por tópico):
+
+| Botón | Comando | Qué hace |
+|---|---|---|
+| **RECTA** | `recta` | Se acerca al punto A (3 s), espera 1 s y traza la diagonal A→C en 6 s |
+| **SEMIARCO** | `semiarco` | Igual, sobre el semiarco inscrito cuyo diámetro está en la diagonal |
+| **HOME** | `home` | Regresa a la postura de reposo |
+| **PARO** | `paro` | Congela la referencia en la posición actual (el brazo se sostiene) |
+| — | `escalon <i> [amp]`, `rampa <i> [pend]` | Pruebas de la Parte 1 sobre la articulación `i` (0…3) en Gazebo |
+
+```bash
+# Lo mismo sin interfaz, por tópicos
+ros2 launch arm_description gazebo.launch.py interfaz:=false
+ros2 topic pub --once /trayectoria/comando std_msgs/msg/String "{data: recta}"
+ros2 topic pub --once /trayectoria/comando std_msgs/msg/String "{data: 'escalon 2 0.2'}"
+ros2 topic echo /efector/posicion
+ros2 topic echo /efector/velocidad
+```
+
+**Interfaz (`interfaz_trayectoria.py`).** Muestra lo que pide la entrega:
+
+- **Tipo de trayectoria solicitada** (RECTA o SEMIARCO), la fase (acercamiento, pausa, trazando, terminada) y el avance.
+- **Posición del órgano terminal en tiempo real:** `x, y, z` en el marco {0} (origen en el carro con `q0 = 0`, X a lo largo del riel, Z hacia arriba, Y hacia el plano) y `u, v` sobre el plano, más la distancia al plano.
+- **Velocidad del órgano terminal en tiempo real:** `vx, vy, vz` y rapidez, calculadas como $J(q)\,\dot q$ a partir de los sensores articulares, con su gráfica de los últimos 20 s.
+- El trazo real sobre la hoja contra la referencia, el error cartesiano y los pares comandados.
+
+![Interfaz durante el semiarco](docs/img/interfaz_semiarco.png)
+
+**Sin Gazebo.** La misma interfaz puede correr contra la planta simulada en Python (útil para ensayar el video o en una máquina sin ROS):
+
+```bash
+cd src/arm_description/scripts
+python3 interfaz_trayectoria.py --demo
+```
+
+### 9. Guion sugerido para el video (máx. 8 min)
+
+| Tiempo | Contenido |
+|---|---|
+| 0:00 – 0:45 | **Objetivo del robot:** trazar una recta y un semiarco sobre el plano inclinado; mostrar el modelo en Gazebo |
+| 0:45 – 2:00 | **Características generales:** 4 GDL + gripper, actuadores propuestos, sensores de posición, arquitectura del lazo de torque (diagrama de la sección 2) |
+| 2:00 – 3:15 | **Control:** modelo del motor, especificaciones $t_p$ = 1 s y $t_s$ = 2 s, tabla de ganancias y gráficas de escalón y rampa |
+| 3:15 – 4:00 | **Forma de operar:** `ros2 launch`, arranque a *home*, botones de la interfaz y qué muestra cada panel |
+| 4:00 – 5:30 | **Corrida 1 — recta:** Gazebo y la interfaz lado a lado; señalar tipo de trayectoria, posición y velocidad en vivo |
+| 5:30 – 7:00 | **Corrida 2 — semiarco:** igual; comentar el error de seguimiento y los pares |
+| 7:00 – 8:00 | Cierre: resultados (errores máximos), limitaciones y siguientes pasos |
+
+### 10. Limitaciones y pendientes
+
+- **Gazebo:** el controlador, las trayectorias y la interfaz se validaron con la simulación en Python de la dinámica del mismo xacro; el xacro se verificó expandiéndolo en sus tres modos. **El lanzamiento completo en Gazebo Harmonic no se pudo ejecutar en el entorno donde se preparó esta entrega** (sin ROS 2 instalado), así que el primer `ros2 launch` debe revisarse en la máquina del equipo. Ver [Solución de Problemas](#solución-de-problemas-comunes).
+- **Parámetros estimados:** $L_a$, $J_m$ y $B$ de los servos (marcados ⚠). Con valores medidos basta volver a correr `diseno_pid.py`.
+- **Arranque:** entre el *spawn* y la activación del nodo el brazo cae por gravedad unos instantes; el controlador se recupera solo (probado con hasta 3 s de caída).
+- **Seguimiento:** el PID es deliberadamente suave (así lo fija $t_s$ = 2 s). El error de 2.8 mm en el semiarco bajaría con prealimentación de aceleración $M(q)\ddot q_{ref}$ o un trazo más lento.
+- **Robot real:** los servos del prototipo se usan con consignas de posición, por lo que el prototipo físico sigue en modo cinemático (`real_robot.launch.py`). Para llevar el control de par al hardware se necesitan actuadores con modo de corriente (los Dynamixel X propuestos lo tienen) o manejar el PWM directamente, y un riel con realimentación de posición.
+- **Fricción seca** (Coulomb) de la guía y de las reducciones no está modelada; en hardware la absorbe el término integral.
 
 ---
 
 ## Arquitectura del Sistema
 
+El paquete tiene tres formas de operar, seleccionadas por el argumento `modo` del xacro:
+
+| `modo` | Hardware (`ros2_control`) | Interfaz de comando | Quién manda | Launch |
+|---|---|---|---|---|
+| `gazebo_torque` (default) | `gz_ros2_control/GazeboSimSystem` | `effort` | `control_torque.py` | `gazebo.launch.py` |
+| `gazebo_posicion` | `gz_ros2_control/GazeboSimSystem` | `position` | `teach_repeat.py` / `teach_pendant_gui.py` | `gazebo.launch.py modo:=gazebo_posicion` |
+| `mock` (robot real) | `mock_components/GenericSystem` | `position` | `teach_repeat.py` / `teach_pendant_gui.py` | `real_robot.launch.py` |
+
+El modo torque se describe en la [sección anterior](#2-arquitectura-del-lazo-de-torque). Flujo con el robot real:
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     RASPBERRY PI — ROS 2                        │
-│                                                                 │
-│  ┌──────────────────┐        ┌───────────────────────────────┐ │
-│  │ teach_pendant_   │        │       teach_repeat.py         │ │
-│  │    gui.py        │        │   (Control por terminal)      │ │
-│  │  (GUI PyQt5)     │        │                               │ │
-│  └────────┬─────────┘        └─────────────┬─────────────────┘ │
-│           │                                │                   │
-│           └───────────────┬────────────────┘                   │
-│                           │  publica /joint_states             │
-│                           ▼                                    │
-│            ┌──────────────────────────┐                        │
-│            │     /joint_states topic  │                        │
-│            │  sensor_msgs/JointState  │                        │
-│            └──────┬───────────────────┘                        │
-│                   │                                            │
-│        ┌──────────┴──────────┐                                 │
-│        ▼                     ▼                                 │
-│  ┌──────────────┐    ┌───────────────────┐                     │
-│  │ robot_state_ │    │  serial_bridge    │                     │
-│  │ publisher    │    │  (nodo ROS 2)     │                     │
-│  │ (XACRO/TF)  │    │  espera CALIBRADO │                     │
-│  └──────┬───────┘    └────────┬──────────┘                     │
-│         │                     │  <riel,h,c,m,g> por UART      │
-│         ▼                     │  115200 baud                   │
-│  ┌─────────────┐              │                                │
-│  │    RViz     │              │                                │
-│  │ (simulación)│              │                                │
-│  └─────────────┘              │                                │
-└───────────────────────────────┼────────────────────────────────┘
-                                │  USB/UART serial
-                                ▼
-┌───────────────────────────────────────────────────────────────┐
-│               ESP32 — IntegradoMotoresYBase.ino               │
-│                                                               │
-│  setup() → ejecutarHoming() → xTaskCreate(tareaMotorPasos)   │
-│                                                               │
-│  loop() (core 1)              tareaMotorPasos (core 0)        │
-│  ├─ Parser serial <...>       └─ stepper.run() + WDT          │
-│  └─ procesarTrama()                                           │
-│       ├─ moverAMilimetros()  → A4988 → Motor a pasos (riel)  │
-│       ├─ radToHiwonder()     → Bus serial → Servos Hiwonder   │
-│       │                          ID1:Hombro  ID2:Codo         │
-│       │                          ID3:Muñeca                   │
-│       └─ servoGripper.write()→ PWM → SG90 (gripper)          │
-│                                                               │
-│  GPIO 26: FC_INICIO ──── homing                              │
-│  GPIO 27: FC_FIN    ──── homing                              │
-└───────────────────────────────────────────────────────────────┘
+┌──────────────────────────── PC / RASPBERRY PI — ROS 2 ───────────────────────────┐
+│                                                                                  │
+│  teach_pendant_gui.py ─┐   JointTrajectory                                       │
+│  teach_repeat.py ──────┴─► /arm_controller/joint_trajectory                      │
+│                            /gripper_controller/joint_trajectory                  │
+│                                        │                                         │
+│                                        ▼                                         │
+│               ros2_control_node (mock_components/GenericSystem)                  │
+│               arm_controller + gripper_controller (JointTrajectoryController)    │
+│                                        │                                         │
+│                          joint_state_broadcaster                                 │
+│                                        ▼                                         │
+│                                 /joint_states ──► robot_state_publisher ──► /tf  │
+│                                        │                                         │
+│                                        ▼                                         │
+│                     serial_bridge.py  (50 Hz)  ──► /esp32/feedback               │
+└────────────────────────────────────────┼─────────────────────────────────────────┘
+                                         │  <riel_m,base_rad,hombro_rad,codo_rad,gripper>
+                                         │  USB/UART 115200 baud
+                                         ▼
+┌───────────────────────────── ESP32 — driver_esp32.ino ───────────────────────────┐
+│  setup() → ejecutarHoming() → "CALIBRADO" → xTaskCreate(tareaMotorPasos)         │
+│  loop() (core 1): parser <...> → procesarTrama()                                 │
+│       ├─ moverAMilimetros()   → A4988 → motor a pasos (riel)                     │
+│       ├─ radToHiwonder()      → bus serial → servos ID 1, 2, 3                   │
+│       └─ servoGripper.write() → PWM → SG90 (gripper)                             │
+│  tareaMotorPasos (core 0): stepper.run() + watchdog                              │
+│  GPIO 26: FC_INICIO     GPIO 27: FC_FIN                                          │
+└──────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Los nodos de enseñanza **no** publican `/joint_states`: envían trayectorias a los controladores; `/joint_states` lo publica `joint_state_broadcaster` y de ahí lo toma `serial_bridge.py`.
 
 ---
 
 ## Estructura de Archivos
 
 ```
-robot_arm_ws/
-├── src/
-│   └── arm_description/
-│       ├── urdf/
-│       │   └── arm_description_v2.xacro       # Descripción cinemática del robot
-│       ├── config/
-│       │   └── arm_controllers.yaml           # Configuración de controladores ROS 2
-│       ├── launch/
-│       │   └── display.launch.py              # Launch para RViz
-│       ├── scripts/
-│       │   ├── teach_repeat.py                # Control por terminal (enseñar y repetir)
-│       │   └── teach_pendant_gui.py           # Control por interfaz gráfica PyQt5
-│       ├── meshes/                            # Mallas 3D del robot (.STL/.DAE)
-│       ├── package.xml
-│       └── CMakeLists.txt
-├── firmware/
-│   └── IntegradoMotoresYBase/
-│       └── IntegradoMotoresYBase.ino          # Firmware ESP32 — control de hardware real
-└── README.md
+D_Mecatronico/
+├── README.md
+├── Bitácora de Diseño - Proyecto Final Diseño Mecatrónico.pdf
+├── driver_esp32.ino                        # Firmware ESP32 (robot real)
+├── docs/img/                               # Gráficas generadas (entrega 3)
+└── src/arm_description/                    # Paquete ROS 2 (ament_cmake)
+    ├── urdf/arm_description.xacro          # Modelo: geometría, inercias, ros2_control (arg modo)
+    ├── meshes/*.STL
+    ├── config/
+    │   ├── arm_controllers.yaml            # Posición: robot real y Gazebo cinemático
+    │   └── arm_controllers_torque.yaml     # Torque: effort_controller + gripper
+    ├── launch/
+    │   ├── gazebo.launch.py                # Simulación (torque o posición)
+    │   └── real_robot.launch.py            # Robot real: mock + serial_bridge
+    ├── scripts/
+    │   ├── modelo_brazo.py                 # Modelo cinemático/dinámico (sin ROS)
+    │   ├── diseno_pid.py                   # Constantes, sintonización, escalón y rampa (sin ROS)
+    │   ├── nucleo_control.py               # PID + G(q) + trayectorias (sin ROS)
+    │   ├── simulacion_offline.py           # Validación no lineal (sin ROS)
+    │   ├── control_torque.py               # Nodo: lazo de torque para Gazebo
+    │   ├── interfaz_trayectoria.py         # Nodo: interfaz del prototipo (PyQt5)
+    │   ├── teach_repeat.py                 # Nodo: enseñar y repetir por terminal
+    │   ├── teach_pendant_gui.py            # Nodo: teach pendant gráfico (PyQt5)
+    │   └── serial_bridge.py                # Nodo: /joint_states → ESP32
+    ├── package.xml
+    └── CMakeLists.txt
 ```
+
+La raíz del repositorio es directamente el *workspace* de colcon (`colcon build` se ejecuta aquí).
 
 ---
 
 ## Descripción de los Códigos
 
-### 1. `arm_description_v2.xacro` — Descripción Cinemática del Robot
+### 1. `arm_description.xacro` — Modelo del robot
 
-**Propósito:** Define la geometría, cinemática, masa e inercias del robot para ROS 2.
+Exportado de SolidWorks (unidades en metros, inercias relativas a cada link) con adiciones:
 
-**Contenido principal:**
+- Masas *dummy* de 64 g por motor y una carga de 400 g (`payload_400g`) en el punto de agarre.
+- Límites, esfuerzo máximo y `<dynamics damping>` por articulación.
+- Bloque `<ros2_control>` y plugin de Gazebo seleccionados con `modo:=gazebo_torque | gazebo_posicion | mock`.
 
-- **Links** (eslabones): declaran la geometría visual, de colisión y propiedades de masa/inercia de cada pieza física. Las inercias están expresadas en coordenadas **relativas al link**, no globales.
-- **Joints** (articulaciones): definen cómo se conectan los links entre sí. Los orígenes están en **metros** y los ángulos en **radianes**.
+Es un xacro: siempre se procesa con `xacro archivo modo:=…` (los launch ya lo hacen).
 
-**Articulaciones definidas:**
+### 2. `arm_controllers.yaml` y `arm_controllers_torque.yaml`
 
-| Joint | Tipo | Eje | Rango |
-|---|---|---|---|
-| `Motor_Base` | `prismatic` | Y | 0.0 – 0.5 m |
-| `Motor_1` | `revolute` | Z | −π – +π rad |
-| `Motor_2` | `revolute` | Z | −π/2 – +π/2 rad |
-| `Motor_3` | `revolute` | Z | −π – +π rad |
+| Archivo | Controladores |
+|---|---|
+| `arm_controllers.yaml` | `joint_state_broadcaster`, `arm_controller` (JointTrajectoryController, 4 articulaciones, posición), `gripper_controller` |
+| `arm_controllers_torque.yaml` | `joint_state_broadcaster`, `effort_controller` (ForwardCommandController, interfaz `effort`, 250 Hz), `gripper_controller` |
 
-> **Nota importante:** Los archivos exportados desde CAD frecuentemente usan milímetros en lugar de metros y coordenadas globales en los orígenes de inercia. Esta versión (`v2`) corrige ambos problemas.
+Brazo y gripper van en controladores separados para poder mover uno sin interrumpir al otro.
 
----
+### 3. Control de torque: `modelo_brazo.py`, `diseno_pid.py`, `nucleo_control.py`, `control_torque.py`, `interfaz_trayectoria.py`, `simulacion_offline.py`
 
-### 2. `arm_controllers.yaml` — Configuración de Controladores
+Descritos en la sección [Entrega 3](#entrega-3--propuesta-control-de-torque-en-gazebo).
 
-**Propósito:** Configura el plugin `ros2_control` para exponer los cuatro joints del robot como un `JointTrajectoryController`.
+### 4. `teach_repeat.py` — Control por terminal (modo posición)
 
-**Estructura:**
+Menú de texto: seleccionar una articulación (`1`–`5`), escribir la pose deseada (en m, rad o grados con sufijo `d`, p. ej. `90d`), ver la trama que recibirá el ESP32 y esperar la convergencia con barra de progreso. Además: `r` graba la postura actual, `p` reproduce la secuencia, `b` la repite N ciclos, `l` lista, `c` borra, `s` muestra el estado, `e` paro de emergencia y `q` sale. Publica `JointTrajectory` en `/arm_controller/joint_trajectory` y `/gripper_controller/joint_trajectory`.
 
-```yaml
-controller_manager:
-  ros__parameters:
-    joint_state_broadcaster:
-      type: joint_state_broadcaster/JointStateBroadcaster
+### 5. `teach_pendant_gui.py` — Teach pendant gráfico (modo posición)
 
-    arm_controller:
-      type: joint_trajectory_controller/JointTrajectoryController
+GUI PyQt5 con diálogo de calibración (espera el mensaje `CALIBRADO` del ESP32 en `/esp32/feedback`), *sliders* para riel, cintura, hombro y codo, botones de gripper abierto/cerrado, memoria de posturas (grabar, reproducir, bucle, vaciar), telemetría y paro de emergencia.
 
-arm_controller:
-  ros__parameters:
-    joints:
-      - Motor_Base
-      - Motor_1
-      - Motor_2
-      - Motor_3
-    command_interfaces: [position]
-    state_interfaces: [position, velocity]
-```
+> Los *sliders* del riel llegan a 460 mm y los angulares a ±150°, mientras que el xacro limita a 300 mm y ±120°; el firmware recorta al recorrido medido en el *homing* y a ±120°.
 
-**Por qué los cuatro joints:** Una configuración incompleta (solo 3 joints) haría que `ros2_control` ignorara `Motor_Base`, dejando la base lineal sin control activo.
+### 6. `serial_bridge.py` — Puente ROS 2 → ESP32
 
----
+Lee `/joint_states` y envía a 50 Hz la trama `<V1,V2,V3,V4,V5>` por `/dev/ttyUSB0` a 115200 baud. Cada línea que responde el ESP32 se publica en `/esp32/feedback`. Reintenta la conexión si el puerto no está disponible.
 
-### 3. `teach_repeat.py` — Control por Terminal (Enseñar y Repetir)
-
-**Propósito:** Nodo ROS 2 en Python que permite al usuario definir posturas del robot ("enseñar") mediante comandos de terminal y luego reproducirlas en secuencia ("repetir").
-
-**Funcionamiento interno:**
-
-```
-Usuario escribe postura → Nodo recibe parámetros →
-Publica en /joint_states → ros2_control ejecuta movimiento
-```
-
-**Características clave:**
-
-- Usa un `dict` (`_pos_map`) para mapear nombre de joint → posición, en lugar de índices fijos. Esto lo hace **robusto ante mensajes `JointState` que lleguen en orden arbitrario**.
-- Permite guardar una secuencia de waypoints y reproducirlos en bucle.
-- Las posiciones de `Motor_Base` se especifican en **metros** y las de `Motor_1/2/3` en **radianes**.
-
-**Uso básico:**
-
-```bash
-ros2 run arm_description teach_repeat.py
-# Dentro del nodo:
-# > teach   → guarda postura actual
-# > repeat  → reproduce todas las posturas guardadas
-# > clear   → borra la secuencia
-```
-
----
-
-### 4. `teach_pendant_gui.py` — Interfaz Gráfica de Control (PyQt5)
-
-**Propósito:** Nodo ROS 2 con interfaz gráfica que emula un *teach pendant* industrial: panel de control con sliders para mover cada articulación en tiempo real.
-
-**Funcionamiento interno:**
-
-```
-Slider GUI (PyQt5) → callback onChange →
-Publica JointState en /joint_states →
-robot_state_publisher actualiza TF →
-RViz visualiza postura
-```
-
-**Características de la GUI:**
-
-| Control | Rango | Unidad |
-|---|---|---|
-| Slider `Motor_Base` | 0.0 – 0.5 | metros (m) |
-| Slider `Motor_1` | −3.14 – +3.14 | radianes (rad) |
-| Slider `Motor_2` | −1.57 – +1.57 | radianes (rad) |
-| Slider `Motor_3` | −3.14 – +3.14 | radianes (rad) |
-| Botón **Teach** | — | Guarda postura actual |
-| Botón **Repeat** | — | Reproduce secuencia |
-| Botón **Clear** | — | Limpia secuencia |
-
-> Los sliders usan escala interna en enteros y convierten al rango físico al publicar, garantizando precisión y fluidez visual.
-
----
-
-### 5. `IntegradoMotoresYBase.ino` — Firmware ESP32: Control de Hardware Real
+### 7. `driver_esp32.ino` — Firmware ESP32: control del hardware real
 
 **Propósito:** Firmware que corre directamente en el microcontrolador **ESP32** y actúa como la capa más baja del sistema. Recibe tramas de posición desde la Raspberry Pi (vía `serial_bridge` de ROS 2) y las traduce en movimientos físicos reales de todos los actuadores.
 
@@ -268,7 +498,7 @@ RViz visualiza postura
 
 | Librería | Propósito |
 |---|---|
-| `LobotSerialServoControl` | Protocolo de bus serial para servos Hiwonder (ID 1, 2, 3) |
+| `LobotSerialServoControl` | Protocolo de bus serial para servos Hiwonder (ID 1 base, ID 2 hombro, ID 3 codo) |
 | `AccelStepper` | Control suave del motor a pasos con aceleración y desaceleración |
 | `ESP32Servo` | Generación de PWM para servo SG90 compatible con ESP32 |
 | FreeRTOS (integrado en ESP-IDF) | Multitarea: tarea dedicada al motor en core 0 |
@@ -290,7 +520,7 @@ setup()
           ├─ Fase 2: regresa hasta FC_INICIO → define posición 0
           ├─ Avance 2 mm (despega del sensor) → redefine cero real
           ├─ Test gripper (0° → 110° → 0°)
-          └─ Envía "CALIBRADO" por serial → Raspberry Pi libera ROS 2
+          └─ Envía "CALIBRADO" por serial → la GUI cierra su diálogo de calibración
                │
                ▼
        xTaskCreatePinnedToCore(tareaMotorPasos, core 0)
@@ -324,7 +554,7 @@ El homing es la **calibración automática de la base lineal** al encender el ro
 4. **Define `currentPosition = 0`** al tocar el inicio.
 5. **Avanza 2 mm** para despegar el sensor, luego **redefine ese punto como el nuevo cero**. De esta forma el riel nunca queda presionando un final de carrera.
 6. **Test del gripper**: ciclo 0° → 110° → 0° para verificar que el SG90 responde correctamente.
-7. **Envía `"CALIBRADO"`** por serial. El `serial_bridge` en la Raspberry Pi espera este mensaje antes de comenzar a enviar tramas de posición, garantizando que ROS 2 y el ESP32 están sincronizados.
+7. **Envía `"CALIBRADO"`** por serial. `serial_bridge.py` lo publica en `/esp32/feedback` y `teach_pendant_gui.py` lo usa para avanzar su diálogo de calibración. El puente **no** espera este mensaje: sigue enviando tramas durante el *homing* y el firmware las descarta.
 
 > **Decisión de diseño crítica:** La tarea FreeRTOS del motor se crea **después** del homing, no antes. Si se creara antes, la tarea y `ejecutarHoming()` competirían por el stepper simultáneamente (race condition), causando movimientos erráticos o bloqueos del mutex.
 
@@ -335,15 +565,15 @@ El homing es la **calibración automática de la base lineal** al encender el ro
 La Raspberry Pi envía tramas a **115200 baud** con la siguiente estructura:
 
 ```
-<riel_m,hombro_rad,codo_rad,muneca_rad,gripper_norm>
+<riel_m,base_rad,hombro_rad,codo_rad,gripper_norm>
 ```
 
 | Campo | Tipo | Unidad | Ejemplo |
 |---|---|---|---|
 | `riel_m` | float | metros | `0.235` |
-| `hombro_rad` | float | radianes | `1.047` |
-| `codo_rad` | float | radianes | `-0.524` |
-| `muneca_rad` | float | radianes | `0.000` |
+| `base_rad` | float | radianes | `1.047` |
+| `hombro_rad` | float | radianes | `-0.524` |
+| `codo_rad` | float | radianes | `0.000` |
 | `gripper_norm` | float | normalizado [0.0–1.0] | `0.750` |
 
 **Ejemplo de trama completa:**
@@ -454,7 +684,7 @@ servoGripper.write(grados);
 1. Abrir Arduino IDE
 2. Seleccionar placa: Herramientas → Placa → ESP32 Dev Module
 3. Seleccionar puerto: Herramientas → Puerto → /dev/ttyUSB0 (o el que corresponda)
-4. Abrir IntegradoMotoresYBase.ino
+4. Abrir driver_esp32.ino
 5. Verificar (Ctrl+R) — debe compilar sin errores
 6. Subir (Ctrl+U) — mantener presionado BOOT en el ESP32 si no sube automáticamente
 7. Abrir Monitor Serial a 115200 baud
@@ -462,265 +692,187 @@ servoGripper.write(grados);
 9. Observar secuencia de homing; al final debe aparecer "CALIBRADO"
 ```
 
-> **Importante:** El `serial_bridge` de ROS 2 (en la Raspberry Pi) **espera el mensaje `"CALIBRADO"`** antes de comenzar a publicar tramas. Si el homing falla o el mensaje no llega, el sistema ROS 2 permanece en espera.
-
----
-
-## Interconexión entre Módulos
-
-El siguiente diagrama muestra el flujo de datos completo entre todos los archivos del proyecto, desde la interfaz de usuario hasta los actuadores físicos:
-
-```
-teach_pendant_gui.py  ──┐
-teach_repeat.py         ├──► /joint_states topic
-                        │         │
-                        │         ├──► robot_state_publisher ──► /tf ──► RViz
-                        │         │         (arm_description_v2.xacro)
-                        │         │
-                        │         └──► serial_bridge (nodo ROS 2)
-                        │                   │
-                        │         arm_controllers.yaml
-                        │         (configura JointTrajectoryController)
-                        │
-                        └──────────────────────────────────────────────────────┐
-                                                                               │
-                                                               UART 115200 baud│
-                                                                               ▼
-                                                         IntegradoMotoresYBase.ino (ESP32)
-                                                               │
-                                      ┌────────────────────────┼──────────────────────────┐
-                                      ▼                        ▼                          ▼
-                               A4988 + Stepper          Bus Hiwonder               PWM SG90
-                               (riel lineal)      (hombro, codo, muñeca)          (gripper)
-```
-
-**Flujo de comunicación paso a paso:**
-
-1. `arm_description_v2.xacro` es parseado al arrancar `robot_state_publisher`, definiendo la geometría y los frames TF del robot.
-2. El ESP32 ejecuta el homing automático al encender y envía `"CALIBRADO"` por serial cuando termina.
-3. El `serial_bridge` de ROS 2 (en la Raspberry Pi) espera `"CALIBRADO"` antes de empezar a enviar tramas de posición.
-4. `teach_repeat.py` o `teach_pendant_gui.py` publican mensajes `sensor_msgs/JointState` en `/joint_states`.
-5. `robot_state_publisher` consume `/joint_states` y publica las transformadas TF de cada eslabón.
-6. **RViz** suscribe a `/tf` y `/robot_description` para renderizar el robot en 3D (simulación visual).
-7. El `serial_bridge` también suscribe a `/joint_states` y convierte cada mensaje en una trama `<riel_m,h_rad,c_rad,m_rad,gripper_norm>` que envía al ESP32 por UART.
-8. El **ESP32** recibe la trama, la parsea, convierte unidades y envía comandos directos a cada actuador físico.
+> **Importante:** si el *homing* falla o `"CALIBRADO"` no llega, el diálogo de calibración de `teach_pendant_gui.py` se queda esperando.
 
 ---
 
 ## Requisitos Previos
 
-### Sistema Operativo
-- **Raspberry Pi:** Ubuntu 22.04 LTS (recomendado para ROS 2 Humble)
-- **PC de desarrollo / Arduino IDE:** Windows, macOS o Linux
-
-### Software — Capa ROS 2 (Raspberry Pi)
-- **ROS 2 Humble Hawksbill** (o superior)
-- **Python 3.10+**
-- **PyQt5** (para la GUI)
-- **Gazebo Fortress** o **Ignition** (para simulación)
-- **colcon** (herramienta de compilación de ROS 2)
-
-### Software — Firmware ESP32
-- **Arduino IDE 2.x**
-- Board support: `esp32 by Espressif Systems` (vía Boards Manager)
-- Librerías Arduino:
-  - `AccelStepper` (Mike McCauley) — Library Manager
-  - `ESP32Servo` (Kevin Harrington) — Library Manager
-  - `LobotSerialServoControl` (Hiwonder) — instalación manual desde `.zip`
-
-### Instalación de dependencias ROS 2
+### Simulación y control (PC)
+- **Ubuntu 24.04** con **ROS 2 Jazzy** y **Gazebo Harmonic**
+- Python 3.12 con `numpy`, `PyQt5`, `matplotlib` (gráficas) y `pyserial` (robot real)
 
 ```bash
 sudo apt update && sudo apt install -y \
-    python3-colcon-common-extensions \
-    ros-humble-robot-state-publisher \
-    ros-humble-joint-state-publisher \
-    ros-humble-joint-state-publisher-gui \
-    ros-humble-ros2-control \
-    ros-humble-ros2-controllers \
-    ros-humble-xacro \
-    ros-humble-rviz2 \
-    python3-pyqt5
+    python3-colcon-common-extensions python3-rosdep \
+    ros-jazzy-xacro ros-jazzy-robot-state-publisher \
+    ros-jazzy-ros2-control ros-jazzy-ros2-controllers \
+    ros-jazzy-ros-gz ros-jazzy-gz-ros2-control \
+    python3-numpy python3-pyqt5 python3-matplotlib python3-serial
 ```
 
-### Permisos de puerto serial (para comunicación con ESP32)
+Los scripts de diseño (`diseno_pid.py`, `simulacion_offline.py`, `interfaz_trayectoria.py --demo`) **no necesitan ROS**: basta con Python, `numpy`, `matplotlib` y `PyQt5` en cualquier sistema operativo.
+
+### Firmware ESP32
+- **Arduino IDE 2.x** con el paquete `esp32 by Espressif Systems`
+- Librerías: `AccelStepper` (Mike McCauley), `ESP32Servo` (Kevin Harrington) y `LobotSerialServoControl` (Hiwonder, instalación manual desde `.zip`)
+
+### Permisos de puerto serial (robot real)
 
 ```bash
 sudo usermod -a -G dialout $USER
-# Cerrar sesión y volver a entrar para que aplique
 ```
+
+Cerrar sesión y volver a entrar para que aplique.
 
 ---
 
 ## Instalación y Configuración
 
-### 1. Crear el workspace
-
 ```bash
-mkdir -p ~/robot_arm_ws/src
-cd ~/robot_arm_ws/src
+git clone https://github.com/Marino-LC/D_Mecatronico.git
 ```
 
-### 2. Clonar o copiar el paquete
-
 ```bash
-# Si tienes el repositorio en GitHub:
-git clone https://github.com/<tu_usuario>/arm_description.git
-
-# O copia manualmente la carpeta arm_description/ dentro de src/
+cd D_Mecatronico
 ```
 
-### 3. Instalar dependencias de ROS 2
-
 ```bash
-cd ~/robot_arm_ws
 rosdep install --from-paths src --ignore-src -r -y
 ```
 
-### 4. Compilar el workspace
-
 ```bash
-cd ~/robot_arm_ws
 colcon build --symlink-install
 ```
 
-### 5. Cargar el entorno
-
 ```bash
-source ~/robot_arm_ws/install/setup.bash
-
-# Agrega esta línea a tu ~/.bashrc para no repetirla cada sesión:
-echo "source ~/robot_arm_ws/install/setup.bash" >> ~/.bashrc
+source install/setup.bash
 ```
 
 ---
 
 ## Instrucciones para Echar a Andar el Robot
 
-Abre **cuatro terminales** separadas. En cada una ejecuta `source ~/robot_arm_ws/install/setup.bash` antes de cualquier comando.
+En cada terminal nueva: `source install/setup.bash` desde la raíz del repositorio.
 
----
-
-### Terminal 1 — Publicar la Descripción del Robot
-
-```bash
-source ~/robot_arm_ws/install/setup.bash
-
-ros2 launch arm_description display.launch.py
-```
-
-Esto inicia:
-- `robot_state_publisher` (carga el XACRO y publica `/robot_description`)
-- `RViz` (abre la visualización 3D del brazo)
-
-> Verifica en RViz que el robot aparezca correctamente en el panel 3D. Si ves errores de TF, espera unos segundos a que los demás nodos levanten.
-
----
-
-### Terminal 2 — Iniciar el Controlador de Joints
-
-```bash
-source ~/robot_arm_ws/install/setup.bash
-
-ros2 run controller_manager spawner arm_controller
-ros2 run controller_manager spawner joint_state_broadcaster
-```
-
-O si usas el launch completo con Gazebo:
+### A. Simulación con control de torque (entrega 3)
 
 ```bash
 ros2 launch arm_description gazebo.launch.py
 ```
 
----
+Abre Gazebo, activa `joint_state_broadcaster`, `effort_controller` y `gripper_controller`, arranca `control_torque.py` y la interfaz. Uso: sección [8](#8-parte-2--prototipo-interfaz-y-corridas).
 
-### Terminal 3 — Opción A: Control por Terminal
+Comprobaciones útiles:
 
 ```bash
-source ~/robot_arm_ws/install/setup.bash
+ros2 control list_controllers
+```
 
+```bash
+ros2 control list_hardware_interfaces
+```
+
+```bash
+ros2 topic hz /joint_states
+```
+
+Debe verse `effort_controller` activo, las cuatro articulaciones con `…/effort [claimed]` y `/joint_states` cerca de 250 Hz.
+
+### B. Simulación cinemática (modo posición)
+
+```bash
+ros2 launch arm_description gazebo.launch.py modo:=gazebo_posicion
+```
+
+```bash
 ros2 run arm_description teach_repeat.py
 ```
 
-Comandos disponibles dentro del nodo:
+### C. Robot real (ESP32)
 
-| Comando | Acción |
-|---|---|
-| `teach` | Guarda la postura actual en la secuencia |
-| `repeat` | Reproduce todas las posturas guardadas |
-| `clear` | Borra la secuencia de posturas |
-| `set <joint> <valor>` | Mueve un joint a una posición específica |
-
-Ejemplo de sesión:
-
-```
-> set Motor_Base 0.2
-> set Motor_1 1.57
-> set Motor_2 -0.5
-> teach
-> set Motor_1 0.0
-> set Motor_2 0.0
-> teach
-> repeat
-```
-
----
-
-### Terminal 3 — Opción B: Control por Interfaz Gráfica (Teach Pendant)
+1. Cargar `driver_esp32.ino` y conectar el ESP32 por USB (`/dev/ttyUSB0`).
+2. Lanzar el sistema (controladores sobre hardware *mock* + `serial_bridge.py`):
 
 ```bash
-source ~/robot_arm_ws/install/setup.bash
+ros2 launch arm_description real_robot.launch.py
+```
 
+3. En otra terminal, la interfaz de enseñanza:
+
+```bash
 ros2 run arm_description teach_pendant_gui.py
 ```
 
-Se abrirá la ventana de la GUI con:
-- **4 sliders** para mover cada articulación en tiempo real
-- **Botones Teach / Repeat / Clear** para programar movimientos
-- Indicadores numéricos del valor actual de cada joint
-
-> Mueve los sliders y observa el robot actualizarse en RViz simultáneamente.
-
----
-
-### Terminal 4 — Monitoreo (Opcional)
+o bien por terminal:
 
 ```bash
-# Ver todos los topics activos
-ros2 topic list
+ros2 run arm_description teach_repeat.py
+```
 
-# Ver los estados de los joints en tiempo real
-ros2 topic echo /joint_states
+### D. Sin ROS (diseño y ensayo)
 
-# Ver el árbol de transformadas TF
-ros2 run tf2_tools view_frames
+```bash
+cd src/arm_description/scripts
+```
+
+```bash
+python3 diseno_pid.py
+```
+
+```bash
+python3 simulacion_offline.py
+```
+
+```bash
+python3 interfaz_trayectoria.py --demo
+```
+
+### Monitoreo
+
+```bash
+ros2 topic echo /trayectoria/estado
+```
+
+```bash
+ros2 topic echo /effort_controller/commands
+```
+
+```bash
+ros2 topic echo /esp32/feedback
 ```
 
 ---
 
 ## Solución de Problemas Comunes
 
-### El robot no aparece en RViz
-- Verifica que `robot_state_publisher` esté corriendo: `ros2 node list | grep robot_state`
-- Asegúrate de que el XACRO no tenga errores: `xacro arm_description_v2.xacro`
-- En RViz, confirma que el **Fixed Frame** esté configurado como `base_link` o `world`
+### Modo torque: el brazo cae y no se levanta
+- Confirmar que `control_torque.py` está corriendo (`ros2 node list`) y que `effort_controller` está `active`.
+- `ros2 topic echo /effort_controller/commands` debe mostrar cuatro valores cambiando. Si no hay mensajes, el nodo no recibe `/joint_states` con las cuatro articulaciones.
+- Si los pares se publican pero Gazebo no reacciona, revisar con `ros2 control list_hardware_interfaces` que las interfaces sean `effort` (el xacro debe haberse procesado con `modo:=gazebo_torque`).
 
-### Error: "Could not load description" al parsear el XACRO
-- El error más común es tener valores en **milímetros** en lugar de **metros**. Revisa que todos los `<origin xyz="..."/>` usen valores menores a 2.0 para un robot de tamaño normal de laboratorio.
-- Las inercias deben estar en coordenadas relativas al link, no globales.
+### Modo torque: el brazo oscila o se aleja de la referencia
+- Indica un signo o cero distinto entre el modelo y Gazebo. `modelo_brazo.py` lee el mismo xacro, así que primero verificar que se recompiló (`colcon build`) tras editar el xacro.
+- Probar sin compensación de gravedad: `ros2 run arm_description control_torque.py --ros-args -p compensar_gravedad:=false -p use_sim_time:=true` (el integrador debe sostener el brazo, más lento). Si así se estabiliza, el problema está en `G(q)`.
+- Si el factor de tiempo real de Gazebo es muy bajo, cerrar la interfaz (`interfaz:=false`) para descargar el CPU.
 
-### Los joints no responden al publicar en `/joint_states`
-- Verifica que `arm_controllers.yaml` liste los **cuatro joints**: `Motor_Base`, `Motor_1`, `Motor_2`, `Motor_3`.
-- Confirma que el controlador esté activo: `ros2 control list_controllers`
+### `spawner` no encuentra `forward_command_controller` o `gz_ros2_control`
+```bash
+sudo apt install ros-jazzy-ros2-controllers ros-jazzy-gz-ros2-control
+```
 
-### La GUI se abre pero el robot no se mueve
-- Verifica que el nodo `robot_state_publisher` esté corriendo en otra terminal.
-- Confirma que `/joint_states` tenga publicaciones: `ros2 topic hz /joint_states`
+### Gazebo no muestra las mallas
+`gazebo.launch.py` agrega la carpeta `share/` a `GZ_SIM_RESOURCE_PATH`; hay que lanzar después de `source install/setup.bash`.
+
+### Error de xacro al lanzar
+Probar el modelo a mano: `xacro src/arm_description/urdf/arm_description.xacro modo:=gazebo_torque > /tmp/brazo.urdf` (requiere el paquete compilado para resolver `$(find arm_description)`).
+
+### Modo posición: los joints no responden
+- `ros2 control list_controllers` debe mostrar `arm_controller` y `gripper_controller` activos.
+- Los nodos de enseñanza publican en `/arm_controller/joint_trajectory`; verificar con `ros2 topic info`.
 
 ### Error de importación de PyQt5
 ```bash
-pip3 install PyQt5
-# o bien:
 sudo apt install python3-pyqt5
 ```
 
@@ -747,7 +899,7 @@ sudo apt install linux-modules-extra-$(uname -r)
 
 ### Los servos Hiwonder no responden
 - Verificar que el bus serial use GPIO 16 (RX2) y GPIO 17 (TX2) a 115200 baud.
-- Confirmar que cada servo tenga su ID configurado correctamente (ID1: hombro, ID2: codo, ID3: muñeca) usando el software de configuración Hiwonder.
+- Confirmar que cada servo tenga su ID configurado correctamente (ID 1: base, ID 2: hombro, ID 3: codo) usando el software de configuración Hiwonder.
 - El bus serial Hiwonder es half-duplex: TX y RX del ESP32 se conectan al mismo cable de datos del servo a través de un resistor o lógica de bus.
 
 ### El gripper no se mueve o tiembla
@@ -759,25 +911,25 @@ sudo apt install linux-modules-extra-$(uname -r)
 
 ## Notas Técnicas
 
-### Conversión de unidades CAD → ROS 2
-Los archivos XACRO exportados directamente desde software CAD (SolidWorks, Fusion 360, etc.) frecuentemente tienen:
-- Coordenadas en **milímetros** → deben convertirse a **metros** (dividir entre 1000)
-- Orígenes de inercia en **coordenadas globales** → deben expresarse en **coordenadas relativas al link**
-- Rotaciones de malla visual incorrectas → corregir solo en `<visual>`, **nunca** en `<joint>` para no afectar la cinemática
+### Marco de tarea {0}
+Origen en el origen del carro (`eje_x`) con `q0 = 0`; X a lo largo del riel, Z vertical, Y hacia el plano de trabajo. `modelo_brazo.py` lo construye a partir del xacro, por lo que las posiciones de la interfaz coinciden con las tablas de la entrega 2. El punto controlado es el centro de la carga (`payload_400g`).
 
-### Robustez en lectura de JointState
-Los mensajes `sensor_msgs/JointState` no garantizan un orden fijo en el arreglo de nombres y posiciones. Por esta razón, los scripts de control usan un **diccionario** (`_pos_map: {nombre_joint: posición}`) en lugar de acceso por índice, garantizando que cada joint reciba el valor correcto independientemente del orden de llegada.
+### Ceros y signos articulares
+En el xacro, `q1` gira alrededor de −Z y el brazo apunta hacia +Y con `q1 ≈ 0.37 rad`; hombro y codo tienen ejes opuestos. Por eso la cinemática inversa se resuelve numéricamente (Newton amortiguado) sobre la cinemática directa del xacro en lugar de usar las fórmulas cerradas con ceros supuestos. Postura *home*: `q = [0.15 m, 0.37, 0.02, −0.55] rad`.
 
-### Escalado del slider de Motor_Base
-La articulación prismática `Motor_Base` opera en metros (rango 0.0–0.5 m), mientras que las articulaciones revoluta operan en radianes (±π). La GUI escala internamente los sliders a sus respectivas unidades físicas para garantizar precisión y una experiencia de control natural.
+### Robustez en la lectura de `JointState`
+`sensor_msgs/JointState` no garantiza el orden de las articulaciones; todos los nodos indexan por nombre.
+
+### Conversión CAD → ROS 2
+Los URDF exportados de CAD suelen traer milímetros y orígenes de inercia globales; este modelo ya está en metros y con inercias relativas a cada link. Las correcciones de orientación de una malla se hacen en `<visual>`, nunca en `<joint>`.
 
 ---
 
 ## Licencia
 
-Proyecto académico — Universidad Autónoma de México, Facultad de Ingeniería.  
+Proyecto académico — Universidad Nacional Autónoma de México, Facultad de Ingeniería.
 Uso educativo y de investigación.
 
 ---
 
-*Desarrollado con ROS 2 Humble · Python 3 · PyQt5 · XACRO · RViz · Gazebo · ESP32 · Arduino IDE · AccelStepper · FreeRTOS*
+*ROS 2 Jazzy · Gazebo Harmonic · ros2_control · Python 3 · NumPy · PyQt5 · ESP32 · Arduino IDE · AccelStepper · FreeRTOS*

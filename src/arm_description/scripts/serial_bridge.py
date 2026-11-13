@@ -25,9 +25,9 @@ import serial
 # ── Orden ESTRICTO que espera el ESP32 ───────────────────────────
 JOINT_NAMES = [
     'moviento_en_x',            # V1 — riel lineal
-    'disco_soportes_rotacion',  # V2 — hombro
-    'brazo_motores',            # V3 — codo
-    'brazo_gripper_azul',       # V4 — muñeca
+    'disco_soportes_rotacion',  # V2 — giro de la base (servo ID 1)
+    'brazo_motores',            # V3 — hombro           (servo ID 2)
+    'brazo_gripper_azul',       # V4 — codo             (servo ID 3)
     'gripper_mecanismo',        # V5 — gripper  ← 2 'p' (igual al URDF/joint_states)
 ]
 
@@ -110,8 +110,8 @@ class SerialBridge(Node):
         if self._ciclo % LOG_CADA == 0:
             self.get_logger().info(
                 f'📤 → {trama.strip()} | '
-                f'riel={p[0]:.3f}m  hombro={p[1]:.3f}rad  '
-                f'codo={p[2]:.3f}rad  muñeca={p[3]:.3f}rad  '
+                f'riel={p[0]:.3f}m  base={p[1]:.3f}rad  '
+                f'hombro={p[2]:.3f}rad  codo={p[3]:.3f}rad  '
                 f'gripper={p[4]:.3f}rad'
             )
 
